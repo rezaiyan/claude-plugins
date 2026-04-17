@@ -1,0 +1,23 @@
+{
+  "name": "rezaiyan",
+  "owner": {
+    "name": "rezaiyan",
+    "email": ""
+  },
+  "metadata": {
+    "description": "Claude Code plugins by rezaiyan"
+  },
+  "plugins": [
+    {
+      "name": "skillfetch",
+      "source": {
+        "source": "github",
+        "repo": "rezaiyan/skillfetch"
+      },
+      "description": "Manage synced AI skill instructions from external GitHub repos — security-scanned, diff-previewed, with local annotations that survive updates.",
+      "author": { "name": "rezaiyan" },
+      "homepage": "https://github.com/rezaiyan/skillfetch",
+      "keywords": ["skills", "sync", "github", "security"]
+    }
+  ]
+}

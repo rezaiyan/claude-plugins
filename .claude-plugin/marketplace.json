@@ -18,6 +18,17 @@
       "author": { "name": "rezaiyan" },
       "homepage": "https://github.com/rezaiyan/skillfetch",
       "keywords": ["skills", "sync", "github", "security"]
+    },
+    {
+      "name": "claude-token-guard",
+      "source": {
+        "source": "github",
+        "repo": "rezaiyan/claude-token-guard"
+      },
+      "description": "Cut token burn on every session — blocks expensive Explore/Plan agents and rewrites verbose Bash commands before they run.",
+      "author": { "name": "rezaiyan" },
+      "homepage": "https://github.com/rezaiyan/claude-token-guard",
+      "keywords": ["hooks", "tokens", "cost", "performance", "agents"]
     }
   ]
 }

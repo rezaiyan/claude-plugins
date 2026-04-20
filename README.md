@@ -1,21 +1,27 @@
-# rezaiyan
+# rezaiyan/claude-plugins
 
-Claude Code plugin marketplace by rezaiyan.
+Claude Code plugin marketplace by Ali Rezaiyan.
 
-## Install
+## Add marketplace
 
 ```shell
-/plugin marketplace add rezaiyan/claude-plugins
+claude plugin marketplace add rezaiyan/claude-plugins
 ```
 
 ## Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| [skillfetch](https://github.com/rezaiyan/skillfetch) | Manage synced AI skill instructions from external GitHub repos |
+| Plugin | Description | Install |
+|--------|-------------|---------|
+| [skillfetch](https://github.com/rezaiyan/skillfetch) | Safely pull AI skill instructions from GitHub repos — security-scanned, diff-previewed, local annotations survive updates | `claude plugin install skillfetch@rezaiyan` |
+| [claude-token-guard](https://github.com/rezaiyan/claude-token-guard) | Cut token burn — blocks expensive Explore/Plan agents, rewrites verbose Bash commands before they run | `claude plugin install claude-token-guard@rezaiyan` |
 
-## Usage
+## Quick start
 
 ```shell
-/plugin install skillfetch@rezaiyan
+# 1. Add this marketplace (once)
+claude plugin marketplace add rezaiyan/claude-plugins
+
+# 2. Install any plugin
+claude plugin install skillfetch@rezaiyan
+claude plugin install claude-token-guard@rezaiyan
 ```

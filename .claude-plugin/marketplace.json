@@ -29,6 +29,17 @@
       "author": { "name": "rezaiyan" },
       "homepage": "https://github.com/rezaiyan/claude-token-guard",
       "keywords": ["hooks", "tokens", "cost", "performance", "agents"]
+    },
+    {
+      "name": "claude-notifier",
+      "source": {
+        "source": "github",
+        "repo": "rezaiyan/claude-notifier"
+      },
+      "description": "Desktop notifications for Claude Code — fires when Claude finishes or needs input (macOS + Linux).",
+      "author": { "name": "rezaiyan" },
+      "homepage": "https://github.com/rezaiyan/claude-notifier",
+      "keywords": ["notifications", "hooks", "stop", "macos", "linux"]
     }
   ]
 }

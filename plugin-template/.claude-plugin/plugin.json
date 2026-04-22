@@ -1,0 +1,13 @@
+{
+  "name": "{{PLUGIN_NAME}}",
+  "version": "1.0.0",
+  "description": "{{DESCRIPTION}}",
+  "author": {
+    "name": "rezaiyan",
+    "url": "https://github.com/rezaiyan"
+  },
+  "homepage": "https://github.com/rezaiyan/{{PLUGIN_NAME}}",
+  "repository": "https://github.com/rezaiyan/{{PLUGIN_NAME}}",
+  "license": "MIT",
+  "keywords": []
+}

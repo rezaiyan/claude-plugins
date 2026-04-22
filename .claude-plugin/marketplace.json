@@ -25,21 +25,10 @@
         "source": "github",
         "repo": "rezaiyan/claude-token-guard"
       },
-      "description": "Cut token burn on every session — blocks expensive Explore/Plan agents and rewrites verbose Bash commands before they run.",
+      "description": "Cut token burn on every session — blocks expensive Explore/Plan agents and rewrites verbose Bash commands to token-efficient equivalents.",
       "author": { "name": "rezaiyan" },
       "homepage": "https://github.com/rezaiyan/claude-token-guard",
-      "keywords": ["hooks", "tokens", "cost", "performance", "agents"]
-    },
-    {
-      "name": "claude-notifier",
-      "source": {
-        "source": "github",
-        "repo": "rezaiyan/claude-notifier"
-      },
-      "description": "Desktop notifications for Claude Code — fires when Claude finishes or needs input (macOS + Linux).",
-      "author": { "name": "rezaiyan" },
-      "homepage": "https://github.com/rezaiyan/claude-notifier",
-      "keywords": ["notifications", "hooks", "stop", "macos", "linux"]
+      "keywords": ["tokens", "hooks", "bash", "agents", "performance"]
     }
   ]
 }

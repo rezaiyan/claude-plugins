@@ -1,29 +1,23 @@
-# rezaiyan/claude-plugins
+# rezaiyan
 
-Claude Code plugin marketplace by Ali Rezaiyan.
+Claude Code plugin marketplace by rezaiyan.
 
-## Add marketplace
+## Install
 
 ```shell
-claude plugin marketplace add rezaiyan/claude-plugins
+/plugin marketplace add rezaiyan/claude-plugins
 ```
 
 ## Plugins
 
-| Plugin | Description | Install |
-|--------|-------------|---------|
-| [skillfetch](https://github.com/rezaiyan/skillfetch) | Safely pull AI skill instructions from GitHub repos — security-scanned, diff-previewed, local annotations survive updates | `claude plugin install skillfetch@rezaiyan` |
-| [claude-token-guard](https://github.com/rezaiyan/claude-token-guard) | Cut token burn — blocks expensive Explore/Plan agents, rewrites verbose Bash commands before they run | `claude plugin install claude-token-guard@rezaiyan` |
-| [claude-notifier](https://github.com/rezaiyan/claude-notifier) | Desktop notifications when Claude finishes or needs input (macOS + Linux) | `claude plugin install claude-notifier@rezaiyan` |
+| Plugin | Description |
+|--------|-------------|
+| [skillfetch](https://github.com/rezaiyan/skillfetch) | Manage synced AI skill instructions from external GitHub repos |
+| [claude-token-guard](https://github.com/rezaiyan/claude-token-guard) | Cut token burn — blocks expensive agents, rewrites verbose Bash commands |
 
-## Quick start
+## Usage
 
 ```shell
-# 1. Add this marketplace (once)
-claude plugin marketplace add rezaiyan/claude-plugins
-
-# 2. Install any plugin
-claude plugin install skillfetch@rezaiyan
-claude plugin install claude-token-guard@rezaiyan
-claude plugin install claude-notifier@rezaiyan
+/plugin install skillfetch@rezaiyan
+/plugin install claude-token-guard@rezaiyan
 ```

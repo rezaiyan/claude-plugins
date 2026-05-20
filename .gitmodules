@@ -7,3 +7,6 @@
 [submodule "claude-notifier"]
 	path = claude-notifier
 	url = git@github.com:rezaiyan/claude-notifier.git
+[submodule "claude-kit-v2"]
+	path = claude-kit-v2
+	url = git@github.com:rezaiyan/claude-kit-v2.git

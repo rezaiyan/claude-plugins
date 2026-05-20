@@ -21,5 +21,5 @@ Claude Code plugin marketplace by rezaiyan.
 ```shell
 /plugin install skillfetch@rezaiyan
 /plugin install claude-token-guard@rezaiyan
-/plugin install memory@rezaiyan
+/plugin install claude-kit-v2@rezaiyan
 ```

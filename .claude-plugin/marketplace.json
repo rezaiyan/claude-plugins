@@ -29,6 +29,17 @@
       "author": { "name": "rezaiyan" },
       "homepage": "https://github.com/rezaiyan/claude-token-guard",
       "keywords": ["tokens", "hooks", "bash", "agents", "performance"]
+    },
+    {
+      "name": "claude-kit-v2",
+      "source": {
+        "source": "github",
+        "repo": "rezaiyan/claude-kit-v2"
+      },
+      "description": "Cross-session memory for Claude Code — auto-summarises every session into SQLite, injects context on start. Includes TUI (claudekit) to manage tools.",
+      "author": { "name": "rezaiyan" },
+      "homepage": "https://github.com/rezaiyan/claude-kit-v2",
+      "keywords": ["memory", "sessions", "context", "sqlite", "productivity"]
     }
   ]
 }

@@ -1,12 +1,12 @@
 [submodule "skillfetch"]
 	path = skillfetch
-	url = git@github.com:rezaiyan/skillfetch.git
+	url = https://github.com/rezaiyan/skillfetch.git
 [submodule "claude-token-guard"]
 	path = claude-token-guard
-	url = git@github.com:rezaiyan/claude-token-guard.git
+	url = https://github.com/rezaiyan/claude-token-guard.git
 [submodule "claude-notifier"]
 	path = claude-notifier
-	url = git@github.com:rezaiyan/claude-notifier.git
+	url = https://github.com/rezaiyan/claude-notifier.git
 [submodule "claude-kit-v2"]
 	path = claude-kit-v2
-	url = git@github.com:rezaiyan/claude-kit-v2.git
+	url = https://github.com/rezaiyan/claude-kit-v2.git

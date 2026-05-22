@@ -75,7 +75,7 @@ git submodule add git@github.com:rezaiyan/<plugin-name>.git <plugin-name>
 Defines what the Claude Code plugin system sees when a user runs:
 
 ```sh
-claude plugin marketplace add rezaiyan/claude-plugins
+claude plugin marketplace add https://github.com/rezaiyan/claude-plugins
 ```
 
 Each entry maps a plugin `name` to its source GitHub repo.

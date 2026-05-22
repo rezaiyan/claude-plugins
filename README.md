@@ -5,7 +5,7 @@ Claude Code plugin marketplace by rezaiyan.
 ## Install
 
 ```shell
-/plugin marketplace add rezaiyan/claude-plugins
+/plugin marketplace add https://github.com/rezaiyan/claude-plugins
 ```
 
 ## Plugins

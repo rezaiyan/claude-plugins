@@ -16,7 +16,7 @@
 
 ```bash
 # Add the marketplace (once)
-claude plugin marketplace add rezaiyan/claude-plugins
+claude plugin marketplace add https://github.com/rezaiyan/claude-plugins
 
 # Install
 claude plugin install {{PLUGIN_NAME}}@rezaiyan

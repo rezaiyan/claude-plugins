@@ -31,14 +31,14 @@
       "keywords": ["tokens", "hooks", "bash", "agents", "performance"]
     },
     {
-      "name": "claude-kit-v2",
+      "name": "claudekit",
       "source": {
         "source": "url",
-        "url": "https://github.com/rezaiyan/claude-kit-v2.git"
+        "url": "https://github.com/rezaiyan/claudekit.git"
       },
       "description": "Cross-session memory for Claude Code — auto-summarises every session into SQLite, injects context on start. Includes TUI (claudekit) to manage tools.",
       "author": { "name": "rezaiyan" },
-      "homepage": "https://github.com/rezaiyan/claude-kit-v2",
+      "homepage": "https://github.com/rezaiyan/claudekit",
       "keywords": ["memory", "sessions", "context", "sqlite", "productivity"]
     }
   ]

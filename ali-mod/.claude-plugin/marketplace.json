@@ -1,0 +1,13 @@
+{
+  "name": "ali-mod",
+  "owner": { "name": "rezaiyan" },
+  "metadata": { "description": "Local marketplace for the ali-mod Claude Code mod" },
+  "plugins": [
+    {
+      "name": "ali-mod",
+      "source": "./",
+      "description": "Band above the prompt (context %, git branch, prod health) and zero-token /health and /status commands",
+      "author": { "name": "rezaiyan" }
+    }
+  ]
+}

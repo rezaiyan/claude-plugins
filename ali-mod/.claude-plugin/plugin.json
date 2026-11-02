@@ -1,0 +1,6 @@
+{
+  "name": "ali-mod",
+  "version": "0.6.0",
+  "description": "Daily-driver band: context %, git, prod health, model/effort buttons, clean view checklist, session bar (Mac + Pi), and zero-token /health and /vps",
+  "author": { "name": "rezaiyan" }
+}

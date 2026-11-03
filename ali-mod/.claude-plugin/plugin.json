@@ -1,0 +1,8 @@
+{
+  "name": "ali-mod",
+  "version": "0.9.0",
+  "description": "Quiet band that appears only when needed: cold-cache warning, /handoff at high context, /screenshare masking, subagent panel; plus /sessions pane (Mac + Pi) and zero-token /health and /vps",
+  "author": {
+    "name": "rezaiyan"
+  }
+}

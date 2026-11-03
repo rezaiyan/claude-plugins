@@ -107,7 +107,7 @@ async function texts(ui: any) {
 }
 
 describe("register", () => {
-  test("band shows ctx, git, prod and the model buttons", async ($, on) => {
+  test("band draws nothing when nothing needs attention", async ($, on) => {
     world(on, { config: [] });
     await $.session.start({
       surface: "terminal",
@@ -120,98 +120,8 @@ describe("register", () => {
       ...BAND,
     });
     const all = await texts(ui);
-    expect(all).toContain("CONTEXT");
-    expect(all).toContain("42%");
-    expect(all).toContain("⎇ main");
-    expect(all).toContain(" *");
-    expect(all).toContain("PROD");
-    expect(all).toContain("up");
-    expect(all.some((t: string) => t.startsWith("╭─ "))).toBe(true);
-    expect(await ui.find({ key: "model-opus" })).toBeDefined();
-    expect(all).not.toContain(" CTX ");
-  });
-
-  test("pressing a model button sets the model row", async ($, on) => {
-    const sets = { config: [] as any[] };
-    world(on, sets);
-    await $.session.start({
-      surface: "terminal",
-      isInteractive: true,
-      cwd: "/work/Lexicon",
-    });
-    const ui = await $.ui.mount({
-      plugin: "ali-mod",
-      surface: "terminal",
-      ...BAND,
-    });
-    await ui.press({ key: "model-sonnet" });
-    expect(sets.config.map((e) => [e.key, e.value])).toEqual([
-      ["model", "sonnet"],
-    ]);
-  });
-
-  test("clean view lists the plan from TaskCreate and TaskUpdate", async ($, on) => {
-    world(on, { config: [] });
-    on("tool.call", ($: any, e: any) => ({
-      result: e.tool === "TaskCreate" ? "Task #7 created successfully" : "ok",
-    }));
-    await $.session.start({
-      surface: "terminal",
-      isInteractive: true,
-      cwd: "/work/Lexicon",
-    });
-    const ui = await $.ui.mount({
-      plugin: "ali-mod",
-      surface: "terminal",
-      ...BAND,
-    });
-    await ui.press({ key: "clean" });
-
-    await $.tool.call({
-      tool: "TaskCreate",
-      subject: "Write the test",
-      description: "d",
-    } as any);
-    await $.tool.call({
-      tool: "TaskUpdate",
-      taskId: "7",
-      status: "in_progress",
-    } as any);
-    const all = await texts(ui);
-    expect(all).toContain("0/1");
-    expect(all).toContain("  0%");
-    expect(all).toContain("Write the test");
-    expect(all).toContain("working");
-  });
-
-  test("clean view hides tool rows, and shows them again when off", async ($, on) => {
-    world(on, { config: [] });
-    await $.session.start({
-      surface: "terminal",
-      isInteractive: true,
-      cwd: "/work/Lexicon",
-    });
-    const TOOL = {
-      component: "ToolUse",
-      props: { tool: "Read", input: {} } as any,
-      requestId: "t1",
-    } as const;
-
-    const before = await $.ui.mount({
-      plugin: "ali-mod",
-      surface: "terminal",
-      ...TOOL,
-    });
-    expect(await texts(before)).toContain("Read a.kt");
-    await before.unmount();
-
-    await $.command.run({ command: "clean", args: "" } as any);
-    const after = await $.ui.mount({
-      plugin: "ali-mod",
-      surface: "terminal",
-      ...TOOL,
-    });
-    expect(await texts(after)).toEqual([]);
+    expect(all).toEqual([]);
+    expect(await ui.find({ key: "clean" })).toBeUndefined();
   });
 
   test("sessions pane lists live sessions and skips dead ones", async ($, on) => {
@@ -423,7 +333,7 @@ describe("register", () => {
     expect(all).toContain("done");
   });
 
-  test("desktop band draws themed cards, a context gauge and native buttons", async ($, on) => {
+  test("desktop band draws a themed card without text glyphs", async ($, on) => {
     world(on, { config: [] });
     await $.session.start({
       surface: "desktop",
@@ -435,13 +345,10 @@ describe("register", () => {
       surface: "desktop",
       ...BAND,
     });
-    const svgs = await ui.findAll({ type: "Svg" });
-    expect(svgs.some((s: any) => s.props?.alt === "Context 42%")).toBe(true);
+    await $.command.run({ command: "screenshare", args: "" } as any);
     const all = await texts(ui);
-    expect(all).toContain("CONTEXT");
-    expect(all).toContain("BRANCH");
+    expect(all).toContain("SCREEN SHARE");
     // Box-drawing and block glyphs misalign in a proportional font
     expect(all.some((t: string) => /[╭╰│▰▱━]/.test(t))).toBe(false);
-    expect(await ui.find({ key: "model-opus" })).toBeDefined();
   });
 });

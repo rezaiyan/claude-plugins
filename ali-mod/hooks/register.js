@@ -1,6 +1,5 @@
 // ali-mod: one band above the prompt for daily work.
-//   ops       ctx %, git branch, prod health, model/effort buttons, /health and /vps
-//   clean     /clean hides tool rows and shows the plan as a checklist
+//   ops       zero-token /health and /vps
 //   sessions  every session writes a heartbeat file; /sessions lists live ones (Mac + Pi)
 //   cache     warns before a message re-reads a chat whose prompt cache went cold
 //   handoff   at high context, /handoff saves a note the next chat in this folder starts from
@@ -9,13 +8,9 @@
 // Claude Code allows one hooks module per plugin and one hook per event, so all parts live here.
 
 const MODELS = ["opus", "sonnet", "haiku"];
-const EFFORTS = ["low", "medium", "high", "max"];
-const HEALTH_EVERY_MS = 10 * 60_000;
 const GIT_EVERY_MS = 15_000;
 
 const TOOL_SITES = /^Tool(Use|Result|Group|Progress)$/;
-const PLAN_ROWS = 8;
-const PLAN_ORDER = { in_progress: 0, pending: 1, completed: 2 };
 
 const BEAT_EVERY_MS = 10_000;
 const LIVE_MS = 45_000; // a heartbeat older than this means the session is gone
@@ -36,18 +31,6 @@ const HANDOFF_PROMPT =
 
 // ── ops state ──
 let git = null; // { branch, dirty } or null outside a repo
-let prod = null; // 'up' | 'down' | null (not checked yet)
-let model = null; // short name of the session's model
-let effort = null; // effort the last request used
-let effortOverride = null; // set when /effort could not be run for us
-
-// ── clean state ──
-let clean = false;
-let tasks = []; // { id, subject, status, startedAt?, endedAt? }
-let promptTitle = null; // the prompt the plan works on
-let turnStartedAt = null;
-let hidden = 0; // tool calls hidden this turn
-let lastTool = null;
 
 // ── sessions state ──
 let dir = null; // ~/.claude/ali-mod/sessions
@@ -99,8 +82,6 @@ async function runAli($, args) {
 
 async function refreshHealth($) {
   const out = await runAli($, ["health"]);
-  prod = out.includes("All services healthy") ? "up" : "down";
-  redraw($);
   return out;
 }
 
@@ -115,66 +96,7 @@ async function refreshGit($) {
       dirty: status.stdout.trim() !== "",
     };
   }
-  model = shortModel(await $.session.model());
   redraw($);
-}
-
-// Same as picking it in /model: changes the session and the saved default
-async function setModel($, name) {
-  await $.config.set({ key: "model", value: name });
-  model = name;
-  await loadEffort($);
-  redraw($);
-}
-
-// The saved effort for the session's model (modelSettings), else the global one,
-// until the first request reports the effort actually in use
-async function loadEffort($) {
-  const s = /** @type {any} */ (await $.settings.read().catch(() => ({})));
-  const id = await $.session.model();
-  const perModel = Object.entries(s.modelSettings ?? {}).find(([key]) =>
-    id.startsWith(key),
-  );
-  const saved = perModel?.[1]?.effortLevel ?? s.effortLevel;
-  effort = typeof saved === "string" ? saved : null;
-}
-
-async function setEffort($, level) {
-  try {
-    await $.command.run({ command: "effort", args: level });
-    effortOverride = null;
-  } catch {
-    // Fallback: rewrite the effort on each request of this session
-    effortOverride = level;
-  }
-  effort = level;
-  redraw($);
-}
-
-// ── clean ──
-
-async function toggleClean($) {
-  clean = !clean;
-  await $.store.set("clean", clean);
-  redraw($);
-}
-
-// Moves a task to a status and stamps when its work started and ended
-function setStatus(task, status) {
-  const now = Date.now();
-  if (status === "in_progress" && !task.startedAt) task.startedAt = now;
-  if (status === "completed" && !task.endedAt) {
-    task.startedAt ??= now;
-    task.endedAt = now;
-  }
-  task.status = status;
-  return task;
-}
-
-// TaskCreate answers with text naming the new id, as in "Task #3 created"
-function idFrom(result, fallback) {
-  const m = JSON.stringify(result ?? "").match(/#(\d+)/);
-  return m ? m[1] : fallback;
 }
 
 // ── sessions ──
@@ -246,10 +168,6 @@ export function register(on) {
       description: "ali status: VPS containers (no tokens)",
     });
     await $.command.register({
-      name: "clean",
-      description: "Toggle clean view: hide tool rows, show plan checklist",
-    });
-    await $.command.register({
       name: "sessions",
       description: "Session bar: live Claude sessions on Mac and Pi",
     });
@@ -263,10 +181,8 @@ export function register(on) {
       description: "Mask private details on screen (add <word> | clear)",
     });
 
-    clean = (await $.store.get("clean")) === true;
     const words = await $.store.get("redact");
     redactWords = Array.isArray(words) ? words : [];
-    await loadEffort($);
     dir = (await $.env.get("HOME")) + "/.claude/ali-mod/sessions";
     const host = await $.process.run(["hostname", "-s"]);
     me = { id: await $.session.id(), host: host.stdout.trim() || "mac" };
@@ -276,9 +192,7 @@ export function register(on) {
       .then(() => beat($))
       .then(() => readLocal($))
       .catch(() => {});
-    quiet(refreshHealth($));
     $.clock.every(GIT_EVERY_MS, () => refreshGit($));
-    $.clock.every(HEALTH_EVERY_MS, () => refreshHealth($));
     $.clock.every(BEAT_EVERY_MS, async () => {
       await beat($);
       await readLocal($);
@@ -288,8 +202,7 @@ export function register(on) {
     });
     // The plan's clock and activity cells move each second while Claude works
     $.clock.every(1000, () => {
-      if ((clean && working && tasks.length) || agents.some((a) => !a.endedAt))
-        redraw($);
+      if (agents.some((a) => !a.endedAt)) redraw($);
     });
     // The cache countdown in the band moves by the minute
     $.clock.every(30_000, () => {
@@ -318,13 +231,10 @@ export function register(on) {
       );
       return { drop: "prompt cache cold" };
     }
-    promptTitle = e.text.replace(/\s+/g, " ").trim();
     return next(e);
   }).catch(($, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
-    hidden = 0;
-    turnStartedAt = Date.now();
     working = true;
     agents = agents.filter((a) => !a.endedAt);
     quiet(beat($));
@@ -357,13 +267,7 @@ export function register(on) {
       }
       return response;
     }
-    if (typeof e.effort === "string" && e.effort !== effort && !effortOverride)
-      effort = e.effort;
-    const sent =
-      effortOverride && e.effort !== undefined
-        ? { ...e, effort: effortOverride }
-        : e;
-    const response = yield* next(sent);
+    const response = yield* next(e);
     // The context grew with this request, so the ctx bar is stale now
     redraw($);
     return response;
@@ -379,40 +283,10 @@ export function register(on) {
       }
       return next(e);
     }
-    hidden += 1;
-    lastTool = e.tool;
-    // The tool's input fields sit on the event itself, beside `tool`
-    const input = /** @type {any} */ (e);
-
-    if (e.tool === "TodoWrite" && Array.isArray(input.todos)) {
-      // TodoWrite resends the whole list: keep each task's timings by its text
-      const before = new Map(tasks.map((t) => [t.subject, t]));
-      tasks = input.todos.map((t, i) =>
-        setStatus(
-          { ...before.get(t.content), id: String(i + 1), subject: t.content },
-          t.status,
-        ),
-      );
-    }
     const result = await next(e);
     if (e.tool === "Agent" || e.tool === "Task") {
       for (const a of agents)
         if (a.toolUseId === e.tool_use_id && !a.endedAt) a.endedAt = Date.now();
-    }
-    if (e.tool === "TaskCreate") {
-      tasks.push({
-        id: idFrom(result, String(tasks.length + 1)),
-        subject: input.subject,
-        status: "pending",
-      });
-    }
-    if (e.tool === "TaskUpdate") {
-      const t = tasks.find((x) => x.id === String(input.taskId));
-      if (t && input.status === "deleted") tasks = tasks.filter((x) => x !== t);
-      else if (t) {
-        if (input.subject) t.subject = input.subject;
-        if (input.status) setStatus(t, input.status);
-      }
     }
     redraw($);
     return result;
@@ -426,11 +300,6 @@ export function register(on) {
   on("command.run", { command: "vps" }, async ($) => ({
     text: await runAli($, ["status"]),
   }));
-
-  on("command.run", { command: "clean" }, async ($) => {
-    await toggleClean($);
-    return { text: "Clean view " + (clean ? "on" : "off") };
-  });
 
   on("command.run", { command: "sessions" }, async ($) => {
     paneOpen = true;
@@ -534,9 +403,7 @@ export function register(on) {
     return next(e);
   }).catch(($, e, next) => next(e));
 
-  // An empty Box draws nothing, so the tool row disappears
   on("ui.render", { component: TOOL_SITES }, async ($, e, next) => {
-    if (clean) return $.ui.resolve(e).Box({ children: [] });
     if (!share) return next(e);
     const props = /** @type {any} */ (e.props);
     return next({
@@ -679,11 +546,6 @@ export function register(on) {
     // What the band shows, gathered once and drawn per surface
     const d = {
       pct: Math.round(usage?.context?.percent ?? 0),
-      narrow: columns < 100,
-      git,
-      prod,
-      sessions: local.length,
-      busy: local.filter((s) => s.working).length,
       cache: null,
       handoff: false,
       share,
@@ -696,23 +558,10 @@ export function register(on) {
         d.cache = { cold: false, minutes: Math.ceil(left / 60_000) };
     }
 
-    const pick = {
-      model: (m) => setModel($, m),
-      effort: (l) => setEffort($, l),
-      clean: () => toggleClean($),
-    };
-    const blocks = isRich(el)
-      ? [cardsRich(el, d), controlsRich(el, pick)]
-      : [cardsTerminal(el, d), controlsTerminal(el, d, pick)];
-
-    const unfinished = tasks.some((t) => t.status !== "completed");
-    if (
-      clean &&
-      (unfinished || e.props.isWorking) &&
-      (tasks.length || hidden)
-    ) {
-      blocks.push(planPanel(el, e.props.isWorking, columns));
-    }
+    // Nothing needs attention: the band stays empty
+    const blocks = bandCards(d).length
+      ? [isRich(el) ? cardsRich(el, d) : cardsTerminal(el, d)]
+      : [];
     if (agents.length) blocks.push(agentsPanel(el, columns));
 
     // Keep whatever other mods draw in the band
@@ -727,61 +576,10 @@ export function register(on) {
 
 // ── band: cards ──
 
-// The cards the band shows, each { key, label, accent, parts, ring? }
-// `parts` are runs of text with their own color; `ring` a percent drawn as a gauge
+// The cards the band shows, each { key, label, accent, parts }
+// `parts` are runs of text with their own color
 function bandCards(d) {
-  const cards = [
-    {
-      key: "ctx",
-      label: "CONTEXT",
-      accent: levelColor(d.pct),
-      parts: [{ text: d.pct + "%", color: levelColor(d.pct), bold: true }],
-      meter: d.pct,
-    },
-  ];
-  if (d.git) {
-    const max = d.narrow ? 16 : 28;
-    const branch =
-      d.git.branch.length > max
-        ? d.git.branch.slice(0, max - 1) + "…"
-        : d.git.branch;
-    cards.push({
-      key: "git",
-      label: "BRANCH",
-      accent: "suggestion",
-      parts: [
-        { text: "⎇ " + branch, color: "text" },
-        ...(d.git.dirty ? [{ text: " *", color: "warning", bold: true }] : []),
-      ],
-    });
-  }
-  if (d.prod) {
-    const up = d.prod === "up";
-    cards.push({
-      key: "prod",
-      label: "PROD",
-      accent: up ? "success" : "error",
-      parts: [
-        { text: "● ", color: up ? "success" : "error" },
-        { text: up ? "up" : "down", color: up ? "text" : "error", bold: !up },
-        ...(up ? [] : [{ text: " /health", color: "subtle" }]),
-      ],
-    });
-  }
-  cards.push({
-    key: "sessions",
-    label: "SESSIONS",
-    accent: "planMode",
-    parts: [
-      { text: String(d.sessions), color: "text", bold: true },
-      ...(d.busy
-        ? [
-            { text: " · ", color: "subtle" },
-            { text: d.busy + " busy", color: "warning" },
-          ]
-        : [{ text: " live", color: "subtle" }]),
-    ],
-  });
+  const cards = [];
   if (d.cache)
     cards.push({
       key: "cache",
@@ -794,9 +592,12 @@ function bandCards(d) {
   if (d.handoff)
     cards.push({
       key: "handoff",
-      label: "CONTEXT FULL",
+      label: "HANDOFF",
       accent: levelColor(d.pct),
-      parts: [{ text: "↻ /handoff", color: levelColor(d.pct), bold: true }],
+      parts: [
+        { text: "↻ /handoff", color: levelColor(d.pct), bold: true },
+        { text: " · " + d.pct + "% full", color: "subtle" },
+      ],
     });
   if (d.share)
     cards.push({
@@ -831,35 +632,24 @@ function runs(el, parts) {
 
 // Terminal: each card a box with its label set into the top border
 function cardsTerminal(el, d) {
-  const cells = d.narrow ? 6 : 10;
   return el.Box({
     key: "cards",
     flexDirection: "row",
     flexWrap: "wrap",
     columnGap: 1,
     children: bandCards(d).map((c) => {
-      const body =
-        c.meter === undefined
-          ? runs(el, c.parts)
-          : el.Box({
-              flexDirection: "row",
-              columnGap: 1,
-              children: [blocks(el, c.meter, cells), runs(el, c.parts)],
-            });
-      const length =
-        partsLength(c.parts) + (c.meter === undefined ? 0 : cells + 1);
       return frame(el, {
         key: c.key,
         label: c.label,
         accent: c.accent,
-        width: Math.max(c.label.length + 6, length + 4),
-        rows: [body],
+        width: Math.max(c.label.length + 6, partsLength(c.parts) + 4),
+        rows: [runs(el, c.parts)],
       });
     }),
   });
 }
 
-// Desktop and other rich surfaces: bordered cards themed by the host, a gauge for context
+// Desktop and other rich surfaces: bordered cards themed by the host
 function cardsRich(el, d) {
   const { Box, Text } = el;
   return Box({
@@ -878,16 +668,6 @@ function cardsRich(el, d) {
         borderColor: c.accent === "subtle" ? "subtle" : c.accent,
         paddingX: 1,
         children: [
-          ...(c.meter === undefined
-            ? []
-            : [
-                ring(
-                  el,
-                  c.meter,
-                  levelColor(c.meter),
-                  "Context " + c.meter + "%",
-                ),
-              ]),
           Box({
             key: "text",
             flexDirection: "column",
@@ -907,119 +687,6 @@ function cardsRich(el, d) {
   });
 }
 
-// ── band: controls ──
-
-const SHORT = { medium: "med" };
-
-// Terminal: segmented pickers, as in  MODEL [ opus ▸sonnet  haiku ]
-function controlsTerminal(el, d, pick) {
-  const { Box, Text, Button } = el;
-  const edge = { color: "subtle", dimColor: true };
-  const segmented = (key, title, options, current, onPick, short = {}) =>
-    Box({
-      key,
-      flexDirection: "row",
-      flexShrink: 0,
-      children: [
-        Text({
-          key: "t",
-          color: "subtle",
-          bold: true,
-          children: [title + " "],
-        }),
-        Text({ key: "o", ...edge, children: ["["] }),
-        ...options.map((o) =>
-          Button({
-            key: key + "-" + o,
-            label:
-              (o === current ? " ▸" : "  ") + (d.narrow ? (short[o] ?? o) : o),
-            plain: true,
-            dimColor: o !== current,
-            onPress: () => onPick(o),
-          }),
-        ),
-        Text({ key: "c", ...edge, children: [" ]"] }),
-      ],
-    });
-  return Box({
-    key: "controls",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    columnGap: 3,
-    paddingX: 1,
-    children: [
-      Box({
-        key: "brand",
-        flexDirection: "row",
-        flexShrink: 0,
-        columnGap: 1,
-        children: [
-          Text({ key: "s", color: "claude", bold: true, children: ["✻"] }),
-          Text({ key: "n", bold: true, children: ["ali"] }),
-        ],
-      }),
-      segmented("model", "MODEL", MODELS, model, pick.model),
-      segmented("effort", "EFFORT", EFFORTS, effort, pick.effort, SHORT),
-      Button({
-        key: "clean",
-        label: clean ? "◉ clean" : "○ clean",
-        plain: true,
-        dimColor: !clean,
-        onPress: pick.clean,
-      }),
-    ],
-  });
-}
-
-// Rich surfaces: native buttons, the active choice drawn as the primary one
-function controlsRich(el, pick) {
-  const { Box, Text, Button } = el;
-  const group = (key, title, options, current, onPick) =>
-    Box({
-      key,
-      flexDirection: "row",
-      alignItems: "center",
-      columnGap: 1,
-      children: [
-        Text({ key: "t", color: "subtle", bold: true, children: [title] }),
-        ...options.map((o) =>
-          Button({
-            key: key + "-" + o,
-            label: o,
-            variant: o === current ? "primary" : "secondary",
-            onPress: () => onPick(o),
-          }),
-        ),
-      ],
-    });
-  return Box({
-    key: "controls",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    columnGap: 2,
-    rowGap: 1,
-    children: [
-      Box({
-        key: "brand",
-        flexDirection: "row",
-        columnGap: 1,
-        children: [
-          Text({ key: "s", color: "claude", bold: true, children: ["✻"] }),
-          Text({ key: "n", bold: true, children: ["ali"] }),
-        ],
-      }),
-      group("model", "MODEL", MODELS, model, pick.model),
-      group("effort", "EFFORT", EFFORTS, effort, pick.effort),
-      Button({
-        key: "clean",
-        label: clean ? "Clean view on" : "Clean view",
-        variant: clean ? "primary" : "secondary",
-        onPress: pick.clean,
-      }),
-    ],
-  });
-}
 // ── drawing helpers ──
 
 const levelColor = (pct) =>
@@ -1123,23 +790,6 @@ function blocks(el, pct, width, color) {
   });
 }
 
-// A round gauge for a percentage
-function ring(el, pct, color, alt) {
-  const r = 11;
-  const around = 2 * Math.PI * r;
-  const arc = (around * Math.min(Math.max(pct, 0), 100)) / 100;
-  const source =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">' +
-    `<circle cx="15" cy="15" r="${r}" fill="none" stroke="${TRACK}" stroke-width="4"/>` +
-    (arc > 0
-      ? `<circle cx="15" cy="15" r="${r}" fill="none" stroke="${hex(color)}" stroke-width="4"` +
-        ` stroke-linecap="round" stroke-dasharray="${arc.toFixed(1)} ${around.toFixed(1)}"` +
-        ' transform="rotate(-90 15 15)"/>'
-      : "") +
-    "</svg>";
-  return el.Svg({ key: "ring", source, alt, width: 30, height: 30 });
-}
-
 // A rounded progress bar, filled with a soft gradient of `color`
 function bar(el, pct, width, color, alt) {
   const fill = Math.round((width * Math.min(Math.max(pct, 0), 100)) / 100);
@@ -1203,156 +853,6 @@ function panel(el, { key, label, accent, columns, rows }) {
       el.Text({ key: "label", color: accent, bold: true, children: [label] }),
       ...rows,
     ],
-  });
-}
-
-// The plan as the prompt it serves, an overall meter, and one row per step in Claude's order
-function planPanel(el, isWorking, columns) {
-  const { Box, Text } = el;
-  const rich = isRich(el);
-  const total = tasks.length;
-  const done = tasks.filter((t) => t.status === "completed").length;
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  const firstPending = tasks.findIndex((t) => t.status === "pending");
-  const now = Date.now();
-  const inner = Math.max(40, columns - 6);
-
-  const raw =
-    (share ? redact(promptTitle) : promptTitle) ?? "Working on the plan";
-  const maxTitle = inner - 10;
-  const title = raw.length > maxTitle ? raw.slice(0, maxTitle - 1) + "…" : raw;
-  const line = (key, children) =>
-    Box({
-      key,
-      width: rich ? undefined : inner,
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      children,
-    });
-
-  const head = line("head", [
-    Box({
-      key: "t",
-      flexDirection: "row",
-      columnGap: 1,
-      flexShrink: 1,
-      children: [
-        Text({ key: "i", color: "claude", children: ["✦"] }),
-        Text({ key: "x", bold: true, wrap: "truncate-end", children: [title] }),
-      ],
-    }),
-    Text({
-      key: "time",
-      color: "subtle",
-      children: [
-        turnStartedAt && isWorking ? elapsed(now - turnStartedAt) : "done",
-      ],
-    }),
-  ]);
-
-  const progress = Box({
-    key: "progress",
-    flexDirection: "row",
-    alignItems: "center",
-    columnGap: 1,
-    children: [
-      rich
-        ? bar(el, pct, 320, "claude", "Plan " + pct + "% done")
-        : blocks(el, pct, Math.max(10, inner - 12), "claude"),
-      Text({ key: "n", color: "subtle", children: [done + "/" + total] }),
-      Text({
-        key: "pct",
-        bold: true,
-        children: [String(pct).padStart(3) + "%"],
-      }),
-    ],
-  });
-
-  const rows = tasks.slice(0, PLAN_ROWS).map((t, i) => {
-    const isDone = t.status === "completed";
-    const isWorkingStep = t.status === "in_progress";
-    const dot = isDone
-      ? Text({ key: "d", color: "success", children: ["✓ "] })
-      : isWorkingStep
-        ? Text({ key: "d", color: "claude", children: [spin(now) + " "] })
-        : Text({ key: "d", color: "subtle", dimColor: true, children: ["○ "] });
-    const meta = isDone
-      ? [
-          Text({
-            key: "m",
-            color: "subtle",
-            dimColor: true,
-            children: [elapsed((t.endedAt ?? now) - (t.startedAt ?? now))],
-          }),
-        ]
-      : isWorkingStep
-        ? [
-            Text({ key: "w", color: "claude", children: ["working"] }),
-            Text({
-              key: "m",
-              color: "subtle",
-              children: [elapsed(now - (t.startedAt ?? now))],
-            }),
-          ]
-        : i === firstPending
-          ? [Text({ key: "n", color: "subtle", children: ["next"] })]
-          : [];
-    return line("row-" + t.id, [
-      Box({
-        key: "name",
-        flexDirection: "row",
-        flexShrink: 1,
-        children: [
-          dot,
-          Text({
-            key: "s",
-            bold: isWorkingStep,
-            color: isDone ? "subtle" : "text",
-            dimColor: !isDone && !isWorkingStep,
-            wrap: "truncate-end",
-            children: [t.subject],
-          }),
-        ],
-      }),
-      Box({
-        key: "meta",
-        flexDirection: "row",
-        columnGap: 1,
-        flexShrink: 0,
-        children: meta,
-      }),
-    ]);
-  });
-  if (tasks.length > PLAN_ROWS)
-    rows.push(
-      Text({
-        key: "more",
-        color: "subtle",
-        dimColor: true,
-        children: ["+ " + (tasks.length - PLAN_ROWS) + " more"],
-      }),
-    );
-  if (!tasks.length && isWorking && hidden)
-    rows.push(
-      Text({
-        key: "hidden",
-        color: "subtle",
-        dimColor: true,
-        children: [
-          hidden + " tool calls hidden" + (lastTool ? " · " + lastTool : ""),
-        ],
-      }),
-    );
-
-  return panel(el, {
-    key: "plan",
-    label: total
-      ? "PLAN · STEP " + Math.min(done + 1, total) + " OF " + total
-      : "PLAN",
-    accent: "claude",
-    columns,
-    rows: [head, ...(total ? [progress] : []), ...rows],
   });
 }
 

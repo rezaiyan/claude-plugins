@@ -551,7 +551,7 @@ export function register(on) {
 
   on("ui.render", { component: "Pane" }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e);
-    const el = $.ui.resolve(e);
+    const el = resolveUi($, e);
     const { Box, Text, Button } = el;
     const all = [...local, ...remote].sort(
       (a, b) => Number(b.working) - Number(a.working) || b.at - a.at,
@@ -672,303 +672,600 @@ export function register(on) {
   });
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    const el = $.ui.resolve(e);
-    const { Box, Text, Button } = el;
+    const el = resolveUi($, e);
     const usage = await $.session.usage();
-    const pct = Math.round(usage?.context?.percent ?? 0);
-    const busy = local.filter((s) => s.working).length;
-    // Beside an open pane the band is narrow: shorter labels, smaller bar
-    const narrow = (e.props.bodyColumns ?? 120) < 100;
-    // Pieces that must stay on one line together; a row wraps between groups
-    const group = (key, children, gap = 1) =>
-      Box({
-        key,
-        flexDirection: "row",
-        flexShrink: 0,
-        columnGap: gap,
-        children,
-      });
+    const columns = e.props.bodyColumns ?? 120;
 
-    // Row 1: what the session and prod look like right now
-    const status = [];
-    if (!narrow)
-      status.push(
-        group("brand", [
-          Text({ color: "claude", children: ["✻"] }),
-          Text({ bold: true, children: ["ali"] }),
-        ]),
-      );
-    status.push(
-      group("ctx", [label(el, "ctx"), ctxBar(el, pct, narrow ? 6 : 12)]),
-    );
-    if (git) {
-      const branch =
-        narrow && git.branch.length > 14
-          ? git.branch.slice(0, 13) + "…"
-          : git.branch;
-      status.push(
-        group(
-          "git",
-          [
-            Text({ color: "suggestion", children: ["⎇ " + branch] }),
-            ...(git.dirty ? [Text({ color: "warning", children: ["*"] })] : []),
-          ],
-          0,
-        ),
-      );
-    }
-    if (prod) {
-      const up = prod === "up";
-      status.push(
-        group("prod", [
-          Text({ color: up ? "success" : "error", children: ["●"] }),
-          Text({ color: up ? "subtle" : "error", children: ["prod"] }),
-          ...(up ? [] : [Text({ color: "subtle", children: ["/health"] })]),
-        ]),
-      );
-    }
-    status.push(
-      group("sessions", [
-        Text({ color: "planMode", children: ["◆"] }),
-        Text({
-          color: "subtle",
-          children: [local.length + (narrow ? "" : " sessions")],
-        }),
-        ...(busy
-          ? [Text({ color: "warning", children: ["· " + busy + " busy"] })]
-          : []),
-      ]),
-    );
+    // What the band shows, gathered once and drawn per surface
+    const d = {
+      pct: Math.round(usage?.context?.percent ?? 0),
+      narrow: columns < 100,
+      git,
+      prod,
+      sessions: local.length,
+      busy: local.filter((s) => s.working).length,
+      cache: null,
+      handoff: false,
+      share,
+    };
+    d.handoff = d.pct >= HANDOFF_AT;
     if (lastReplyAt !== null && !e.props.isWorking) {
       const left = CACHE_TTL_MS - ((await $.clock.now()) - lastReplyAt);
-      if (left <= 0)
-        status.push(
-          group("cache", [
-            Text({ color: "warning", children: ["◌"] }),
-            Text({ color: "warning", children: ["cache cold"] }),
-          ]),
-        );
+      if (left <= 0) d.cache = { cold: true, minutes: 0 };
       else if (left <= CACHE_SOON_MS)
-        status.push(
-          group("cache", [
-            Text({ color: "subtle", children: ["◷"] }),
-            Text({
-              color: "subtle",
-              children: ["cache " + Math.ceil(left / 60_000) + "m"],
-            }),
-          ]),
-        );
+        d.cache = { cold: false, minutes: Math.ceil(left / 60_000) };
     }
-    if (pct >= HANDOFF_AT)
-      status.push(
-        group("handoff", [
-          Text({ color: levelColor(pct), children: ["↻ /handoff"] }),
-        ]),
-      );
-    if (share)
-      status.push(
-        group("share", [
-          Text({ color: "error", children: ["●"] }),
-          Text({ color: "error", children: ["sharing"] }),
-        ]),
-      );
 
-    // Row 2: radio-style toggles, the active one at full strength
-    const choice = (key, text, active, onPress) =>
-      Button({
-        key,
-        label: (active ? "◉ " : "○ ") + text,
-        plain: true,
-        dimColor: !active,
-        onPress,
-      });
-    const short = { medium: "med" };
-    const controls = [
-      group("models", [
-        ...(narrow ? [] : [label(el, "model")]),
-        ...MODELS.map((m) =>
-          choice("model-" + m, m, m === model, () => setModel($, m)),
-        ),
-      ]),
-      group("efforts", [
-        ...(narrow ? [] : [label(el, "effort")]),
-        ...EFFORTS.map((l) =>
-          choice(
-            "effort-" + l,
-            narrow ? (short[l] ?? l) : l,
-            l === effort,
-            () => setEffort($, l),
-          ),
-        ),
-      ]),
-      group("clean", [choice("clean", "clean", clean, () => toggleClean($))]),
-    ];
+    const pick = {
+      model: (m) => setModel($, m),
+      effort: (l) => setEffort($, l),
+      clean: () => toggleClean($),
+    };
+    const blocks = isRich(el)
+      ? [cardsRich(el, d), controlsRich(el, pick)]
+      : [cardsTerminal(el, d), controlsTerminal(el, d, pick)];
 
-    const row = (key, children) =>
-      Box({
-        key,
-        flexDirection: "row",
-        flexWrap: "wrap",
-        columnGap: 3,
-        children,
-      });
-    const panel = Box({
-      key: "panel",
-      flexDirection: "column",
-      borderStyle: "round",
-      borderColor: "subtle",
-      borderDimColor: true,
-      paddingX: 1,
-      children: [row("status", status), row("controls", controls)],
-    });
-
-    const blocks = [panel];
     const unfinished = tasks.some((t) => t.status !== "completed");
     if (
       clean &&
       (unfinished || e.props.isWorking) &&
       (tasks.length || hidden)
     ) {
-      blocks.push(planPanel(el, e.props.isWorking, e.props.bodyColumns ?? 120));
+      blocks.push(planPanel(el, e.props.isWorking, columns));
     }
-    if (agents.length) blocks.push(agentsPanel(el));
+    if (agents.length) blocks.push(agentsPanel(el, columns));
 
     // Keep whatever other mods draw in the band
     const others = await next(e);
-    return Box({
+    return el.Box({
       flexDirection: "column",
+      rowGap: isRich(el) ? 1 : 0,
       children: [...blocks, ...(others ? [others] : [])],
     });
   });
 }
 
-// ── drawing helpers ──
+// ── band: cards ──
 
-const levelColor = (pct) =>
-  pct >= 80 ? "error" : pct >= 60 ? "warning" : "success";
-
-function label(el, text) {
-  return el.Text({ color: "subtle", dimColor: true, children: [text] });
+// The cards the band shows, each { key, label, accent, parts, ring? }
+// `parts` are runs of text with their own color; `ring` a percent drawn as a gauge
+function bandCards(d) {
+  const cards = [
+    {
+      key: "ctx",
+      label: "CONTEXT",
+      accent: levelColor(d.pct),
+      parts: [{ text: d.pct + "%", color: levelColor(d.pct), bold: true }],
+      meter: d.pct,
+    },
+  ];
+  if (d.git) {
+    const max = d.narrow ? 16 : 28;
+    const branch =
+      d.git.branch.length > max
+        ? d.git.branch.slice(0, max - 1) + "…"
+        : d.git.branch;
+    cards.push({
+      key: "git",
+      label: "BRANCH",
+      accent: "suggestion",
+      parts: [
+        { text: "⎇ " + branch, color: "text" },
+        ...(d.git.dirty ? [{ text: " *", color: "warning", bold: true }] : []),
+      ],
+    });
+  }
+  if (d.prod) {
+    const up = d.prod === "up";
+    cards.push({
+      key: "prod",
+      label: "PROD",
+      accent: up ? "success" : "error",
+      parts: [
+        { text: "● ", color: up ? "success" : "error" },
+        { text: up ? "up" : "down", color: up ? "text" : "error", bold: !up },
+        ...(up ? [] : [{ text: " /health", color: "subtle" }]),
+      ],
+    });
+  }
+  cards.push({
+    key: "sessions",
+    label: "SESSIONS",
+    accent: "planMode",
+    parts: [
+      { text: String(d.sessions), color: "text", bold: true },
+      ...(d.busy
+        ? [
+            { text: " · ", color: "subtle" },
+            { text: d.busy + " busy", color: "warning" },
+          ]
+        : [{ text: " live", color: "subtle" }]),
+    ],
+  });
+  if (d.cache)
+    cards.push({
+      key: "cache",
+      label: "CACHE",
+      accent: d.cache.cold ? "warning" : "subtle",
+      parts: d.cache.cold
+        ? [{ text: "◌ cold", color: "warning", bold: true }]
+        : [{ text: "◷ " + d.cache.minutes + "m left", color: "text" }],
+    });
+  if (d.handoff)
+    cards.push({
+      key: "handoff",
+      label: "CONTEXT FULL",
+      accent: levelColor(d.pct),
+      parts: [{ text: "↻ /handoff", color: levelColor(d.pct), bold: true }],
+    });
+  if (d.share)
+    cards.push({
+      key: "share",
+      label: "SCREEN SHARE",
+      accent: "error",
+      parts: [
+        { text: "● ", color: "error" },
+        { text: "masking", color: "text" },
+      ],
+    });
+  return cards;
 }
 
-// ── screen-share masking ──
+const partsLength = (parts) => parts.reduce((n, p) => n + p.text.length, 0);
 
-const MASKS = [
-  /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, // email
-  /\b(?:sk|pk|rk|ghp|gho|github_pat|xox[abpr]|AKIA)[-_A-Za-z0-9]{12,}/g, // API keys
-  /\b\d{1,3}(?:\.\d{1,3}){3}\b/g, // IPv4
-  /[$€£]\s?\d[\d,.]*(?:\s?[kKmMbB]\b)?|\b\d[\d,.]*\s?(?:USD|EUR|GBP|dollars|euros)\b/g, // money
-  /(?:\+\d{1,3}[ -]?)?(?:\(\d{2,4}\)|\d{2,4})[ -]\d{3,4}[ -]\d{3,4}\b/g, // phone
-];
-const escapeRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// Each match becomes a bar of its own length, so the layout does not move
-function redact(text) {
-  if (typeof text !== "string") return text;
-  const bar = (m) => "▇".repeat(m.length);
-  let out = MASKS.reduce((t, re) => t.replace(re, bar), text);
-  for (const w of redactWords)
-    out = out.replace(new RegExp(escapeRe(w), "gi"), bar);
-  return out;
-}
-
-function redactDeep(value) {
-  if (typeof value === "string") return redact(value);
-  if (Array.isArray(value)) return value.map(redactDeep);
-  if (value && typeof value === "object")
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, redactDeep(v)]),
-    );
-  return value;
-}
-
-// A thin meter, as in  ━━━━━━────── 42%
-function meter(el, pct, width, color) {
-  const filled = Math.round((Math.min(Math.max(pct, 0), 100) / 100) * width);
+function runs(el, parts) {
   return el.Box({
     flexDirection: "row",
     flexShrink: 0,
-    children: [
-      el.Text({ color, children: ["━".repeat(filled)] }),
+    children: parts.map((p, i) =>
       el.Text({
-        color: "subtle",
-        dimColor: true,
-        children: ["─".repeat(width - filled)],
+        key: "p" + i,
+        color: p.color,
+        bold: p.bold,
+        dimColor: p.dim,
+        children: [p.text],
+      }),
+    ),
+  });
+}
+
+// Terminal: each card a box with its label set into the top border
+function cardsTerminal(el, d) {
+  const cells = d.narrow ? 6 : 10;
+  return el.Box({
+    key: "cards",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    columnGap: 1,
+    children: bandCards(d).map((c) => {
+      const body =
+        c.meter === undefined
+          ? runs(el, c.parts)
+          : el.Box({
+              flexDirection: "row",
+              columnGap: 1,
+              children: [blocks(el, c.meter, cells), runs(el, c.parts)],
+            });
+      const length =
+        partsLength(c.parts) + (c.meter === undefined ? 0 : cells + 1);
+      return frame(el, {
+        key: c.key,
+        label: c.label,
+        accent: c.accent,
+        width: Math.max(c.label.length + 6, length + 4),
+        rows: [body],
+      });
+    }),
+  });
+}
+
+// Desktop and other rich surfaces: bordered cards themed by the host, a gauge for context
+function cardsRich(el, d) {
+  const { Box, Text } = el;
+  return Box({
+    key: "cards",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    columnGap: 1,
+    rowGap: 1,
+    children: bandCards(d).map((c) =>
+      Box({
+        key: c.key,
+        flexDirection: "row",
+        alignItems: "center",
+        columnGap: 1,
+        borderStyle: "round",
+        borderColor: c.accent === "subtle" ? "subtle" : c.accent,
+        paddingX: 1,
+        children: [
+          ...(c.meter === undefined
+            ? []
+            : [
+                ring(
+                  el,
+                  c.meter,
+                  levelColor(c.meter),
+                  "Context " + c.meter + "%",
+                ),
+              ]),
+          Box({
+            key: "text",
+            flexDirection: "column",
+            children: [
+              Text({
+                key: "label",
+                color: "subtle",
+                bold: true,
+                children: [c.label],
+              }),
+              runs(el, c.parts),
+            ],
+          }),
+        ],
+      }),
+    ),
+  });
+}
+
+// ── band: controls ──
+
+const SHORT = { medium: "med" };
+
+// Terminal: segmented pickers, as in  MODEL [ opus ▸sonnet  haiku ]
+function controlsTerminal(el, d, pick) {
+  const { Box, Text, Button } = el;
+  const edge = { color: "subtle", dimColor: true };
+  const segmented = (key, title, options, current, onPick, short = {}) =>
+    Box({
+      key,
+      flexDirection: "row",
+      flexShrink: 0,
+      children: [
+        Text({
+          key: "t",
+          color: "subtle",
+          bold: true,
+          children: [title + " "],
+        }),
+        Text({ key: "o", ...edge, children: ["["] }),
+        ...options.map((o) =>
+          Button({
+            key: key + "-" + o,
+            label:
+              (o === current ? " ▸" : "  ") + (d.narrow ? (short[o] ?? o) : o),
+            plain: true,
+            dimColor: o !== current,
+            onPress: () => onPick(o),
+          }),
+        ),
+        Text({ key: "c", ...edge, children: [" ]"] }),
+      ],
+    });
+  return Box({
+    key: "controls",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    columnGap: 3,
+    paddingX: 1,
+    children: [
+      Box({
+        key: "brand",
+        flexDirection: "row",
+        flexShrink: 0,
+        columnGap: 1,
+        children: [
+          Text({ key: "s", color: "claude", bold: true, children: ["✻"] }),
+          Text({ key: "n", bold: true, children: ["ali"] }),
+        ],
+      }),
+      segmented("model", "MODEL", MODELS, model, pick.model),
+      segmented("effort", "EFFORT", EFFORTS, effort, pick.effort, SHORT),
+      Button({
+        key: "clean",
+        label: clean ? "◉ clean" : "○ clean",
+        plain: true,
+        dimColor: !clean,
+        onPress: pick.clean,
       }),
     ],
   });
 }
 
-// The context meter, colored by how full it is, and its percentage
+// Rich surfaces: native buttons, the active choice drawn as the primary one
+function controlsRich(el, pick) {
+  const { Box, Text, Button } = el;
+  const group = (key, title, options, current, onPick) =>
+    Box({
+      key,
+      flexDirection: "row",
+      alignItems: "center",
+      columnGap: 1,
+      children: [
+        Text({ key: "t", color: "subtle", bold: true, children: [title] }),
+        ...options.map((o) =>
+          Button({
+            key: key + "-" + o,
+            label: o,
+            variant: o === current ? "primary" : "secondary",
+            onPress: () => onPick(o),
+          }),
+        ),
+      ],
+    });
+  return Box({
+    key: "controls",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: 2,
+    rowGap: 1,
+    children: [
+      Box({
+        key: "brand",
+        flexDirection: "row",
+        columnGap: 1,
+        children: [
+          Text({ key: "s", color: "claude", bold: true, children: ["✻"] }),
+          Text({ key: "n", bold: true, children: ["ali"] }),
+        ],
+      }),
+      group("model", "MODEL", MODELS, model, pick.model),
+      group("effort", "EFFORT", EFFORTS, effort, pick.effort),
+      Button({
+        key: "clean",
+        label: clean ? "Clean view on" : "Clean view",
+        variant: clean ? "primary" : "secondary",
+        onPress: pick.clean,
+      }),
+    ],
+  });
+}
+// ── drawing helpers ──
+
+const levelColor = (pct) =>
+  pct >= 80 ? "error" : pct >= 60 ? "warning" : "success";
+
+// The terminal draws text cells only; every other surface has Svg and a proportional font.
+// A table answers any element name (an unknown one draws a fragment), so ask the surface.
+const richTables = new WeakMap();
+function resolveUi($, e) {
+  const el = $.ui.resolve(e);
+  richTables.set(el, e.surface !== "terminal");
+  return el;
+}
+const isRich = (el) => richTables.get(el) === true;
+
+// Theme colors as hex for SVG, mid tones that read on light and dark alike
+const HEX = {
+  success: "#2ea043",
+  warning: "#d29922",
+  error: "#e5534b",
+  claude: "#d97757",
+  suggestion: "#7c8cf8",
+  planMode: "#3fb6a8",
+};
+const hex = (c) => HEX[c] ?? (c?.startsWith("#") ? c : "#8b929b");
+const TRACK = "rgba(127,127,127,.25)";
+
+// A box drawn from text with its label set into the top border:  ╭─ LABEL ───╮
+function frame(el, { key, label, accent, width, rows }) {
+  const { Box, Text } = el;
+  const edge = { color: "subtle", dimColor: true };
+  const fill = Math.max(0, width - 5 - label.length);
+  return Box({
+    key,
+    flexDirection: "column",
+    flexShrink: 0,
+    width,
+    children: [
+      Box({
+        key: "top",
+        flexDirection: "row",
+        children: [
+          Text({ key: "a", ...edge, children: ["╭─ "] }),
+          Text({ key: "l", color: accent, bold: true, children: [label] }),
+          Text({ key: "b", ...edge, children: [" " + "─".repeat(fill) + "╮"] }),
+        ],
+      }),
+      ...rows.map((row, i) =>
+        Box({
+          key: "row" + i,
+          flexDirection: "row",
+          children: [
+            Text({ key: "l", ...edge, children: ["│ "] }),
+            Box({
+              key: "in",
+              width: width - 4,
+              flexShrink: 0,
+              flexDirection: "row",
+              overflow: "hidden",
+              children: [row],
+            }),
+            Text({ key: "r", ...edge, children: [" │"] }),
+          ],
+        }),
+      ),
+      Text({
+        key: "bottom",
+        ...edge,
+        children: ["╰" + "─".repeat(width - 2) + "╯"],
+      }),
+    ],
+  });
+}
+
+// ▰▰▰▰▱▱: each filled cell colored by how full the meter is there, or all in `color`
+function blocks(el, pct, width, color) {
+  const filled = Math.round((Math.min(Math.max(pct, 0), 100) / 100) * width);
+  const cells = Array.from({ length: width }, (_, i) =>
+    i < filled
+      ? { glyph: "▰", color: color ?? levelColor(((i + 1) / width) * 100) }
+      : { glyph: "▱", color: "subtle" },
+  );
+  const grouped = [];
+  for (const c of cells) {
+    const last = grouped[grouped.length - 1];
+    if (last && last.color === c.color && last.glyph === c.glyph)
+      last.text += c.glyph;
+    else grouped.push({ ...c, text: c.glyph });
+  }
+  return el.Box({
+    flexDirection: "row",
+    flexShrink: 0,
+    children: grouped.map((g, i) =>
+      el.Text({
+        key: "c" + i,
+        color: g.color,
+        dimColor: g.color === "subtle",
+        children: [g.text],
+      }),
+    ),
+  });
+}
+
+// A round gauge for a percentage
+function ring(el, pct, color, alt) {
+  const r = 11;
+  const around = 2 * Math.PI * r;
+  const arc = (around * Math.min(Math.max(pct, 0), 100)) / 100;
+  const source =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">' +
+    `<circle cx="15" cy="15" r="${r}" fill="none" stroke="${TRACK}" stroke-width="4"/>` +
+    (arc > 0
+      ? `<circle cx="15" cy="15" r="${r}" fill="none" stroke="${hex(color)}" stroke-width="4"` +
+        ` stroke-linecap="round" stroke-dasharray="${arc.toFixed(1)} ${around.toFixed(1)}"` +
+        ' transform="rotate(-90 15 15)"/>'
+      : "") +
+    "</svg>";
+  return el.Svg({ key: "ring", source, alt, width: 30, height: 30 });
+}
+
+// A rounded progress bar, filled with a soft gradient of `color`
+function bar(el, pct, width, color, alt) {
+  const fill = Math.round((width * Math.min(Math.max(pct, 0), 100)) / 100);
+  const c = hex(color);
+  const source =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="8" viewBox="0 0 ${width} 8">` +
+    `<defs><linearGradient id="g"><stop offset="0" stop-color="${c}" stop-opacity=".65"/>` +
+    `<stop offset="1" stop-color="${c}"/></linearGradient></defs>` +
+    `<rect width="${width}" height="8" rx="4" fill="${TRACK}"/>` +
+    (fill > 0
+      ? `<rect width="${Math.max(fill, 8)}" height="8" rx="4" fill="url(#g)"/>`
+      : "") +
+    "</svg>";
+  return el.Svg({ key: "bar", source, alt, width, height: 8 });
+}
+
+// The context meter of a session row, and its percentage
 function ctxBar(el, pct, width) {
   return el.Box({
     flexDirection: "row",
     flexShrink: 0,
+    alignItems: "center",
+    columnGap: 1,
     children: [
-      meter(el, pct, width, levelColor(pct)),
-      el.Text({ color: levelColor(pct), children: [" " + pct + "%"] }),
+      isRich(el)
+        ? bar(el, pct, width * 8, levelColor(pct), "Context " + pct + "%")
+        : blocks(el, pct, width),
+      el.Text({ key: "pct", color: levelColor(pct), children: [pct + "%"] }),
     ],
   });
 }
 
 // ── plan panel ──
 
-const SPIN = ["◐", "◓", "◑", "◒"]; // the working step's dot turns once a second
+const SPIN = ["◐", "◓", "◑", "◒"]; // a running step's dot turns once a second
+const spin = (now) => SPIN[Math.floor(now / 1000) % SPIN.length];
 
 function elapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
 
+// A card holding rows, as each surface draws one: a text frame, or a themed box
+function panel(el, { key, label, accent, columns, rows }) {
+  if (!isRich(el))
+    return frame(el, {
+      key,
+      label,
+      accent,
+      width: Math.max(44, columns - 2),
+      rows,
+    });
+  return el.Box({
+    key,
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: "subtle",
+    paddingX: 1,
+    rowGap: 0,
+    children: [
+      el.Text({ key: "label", color: accent, bold: true, children: [label] }),
+      ...rows,
+    ],
+  });
+}
+
 // The plan as the prompt it serves, an overall meter, and one row per step in Claude's order
 function planPanel(el, isWorking, columns) {
   const { Box, Text } = el;
+  const rich = isRich(el);
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "completed").length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const firstPending = tasks.findIndex((t) => t.status === "pending");
   const now = Date.now();
-
-  const inner = Math.max(40, columns - 4);
-  const nameWidth = Math.max(18, Math.floor(inner * 0.6));
+  const inner = Math.max(40, columns - 6);
 
   const raw =
     (share ? redact(promptTitle) : promptTitle) ?? "Working on the plan";
-  const maxTitle = inner - 12;
+  const maxTitle = inner - 10;
   const title = raw.length > maxTitle ? raw.slice(0, maxTitle - 1) + "…" : raw;
+  const line = (key, children) =>
+    Box({
+      key,
+      width: rich ? undefined : inner,
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      children,
+    });
 
-  const head = Box({
-    key: "head",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    children: [
-      Box({
-        key: "t",
-        flexDirection: "row",
-        columnGap: 1,
-        children: [
-          Text({ color: "claude", children: ["✦"] }),
-          Text({ bold: true, children: [title] }),
-        ],
-      }),
-      Text({
-        color: "subtle",
-        children: [
-          turnStartedAt && isWorking ? elapsed(now - turnStartedAt) : "done",
-        ],
-      }),
-    ],
-  });
+  const head = line("head", [
+    Box({
+      key: "t",
+      flexDirection: "row",
+      columnGap: 1,
+      flexShrink: 1,
+      children: [
+        Text({ key: "i", color: "claude", children: ["✦"] }),
+        Text({ key: "x", bold: true, wrap: "truncate-end", children: [title] }),
+      ],
+    }),
+    Text({
+      key: "time",
+      color: "subtle",
+      children: [
+        turnStartedAt && isWorking ? elapsed(now - turnStartedAt) : "done",
+      ],
+    }),
+  ]);
 
   const progress = Box({
     key: "progress",
     flexDirection: "row",
+    alignItems: "center",
     columnGap: 1,
-    marginBottom: 1,
     children: [
-      meter(el, pct, Math.max(10, inner - 14), "claude"),
-      Text({ color: "subtle", children: [done + "/" + total] }),
-      Text({ bold: true, children: [String(pct).padStart(3) + "%"] }),
+      rich
+        ? bar(el, pct, 320, "claude", "Plan " + pct + "% done")
+        : blocks(el, pct, Math.max(10, inner - 12), "claude"),
+      Text({ key: "n", color: "subtle", children: [done + "/" + total] }),
+      Text({
+        key: "pct",
+        bold: true,
+        children: [String(pct).padStart(3) + "%"],
+      }),
     ],
   });
 
@@ -976,16 +1273,14 @@ function planPanel(el, isWorking, columns) {
     const isDone = t.status === "completed";
     const isWorkingStep = t.status === "in_progress";
     const dot = isDone
-      ? Text({ color: "success", children: ["✓ "] })
+      ? Text({ key: "d", color: "success", children: ["✓ "] })
       : isWorkingStep
-        ? Text({
-            color: "claude",
-            children: [SPIN[Math.floor(now / 1000) % SPIN.length] + " "],
-          })
-        : Text({ color: "subtle", dimColor: true, children: ["○ "] });
+        ? Text({ key: "d", color: "claude", children: [spin(now) + " "] })
+        : Text({ key: "d", color: "subtle", dimColor: true, children: ["○ "] });
     const meta = isDone
       ? [
           Text({
+            key: "m",
             color: "subtle",
             dimColor: true,
             children: [elapsed((t.endedAt ?? now) - (t.startedAt ?? now))],
@@ -993,107 +1288,85 @@ function planPanel(el, isWorking, columns) {
         ]
       : isWorkingStep
         ? [
-            Text({ color: "claude", children: ["working"] }),
+            Text({ key: "w", color: "claude", children: ["working"] }),
             Text({
+              key: "m",
               color: "subtle",
               children: [elapsed(now - (t.startedAt ?? now))],
             }),
           ]
         : i === firstPending
-          ? [Text({ color: "subtle", children: ["next"] })]
+          ? [Text({ key: "n", color: "subtle", children: ["next"] })]
           : [];
-    return Box({
-      key: "row-" + t.id,
-      flexDirection: "row",
-      justifyContent: "space-between",
-      children: [
-        Box({
-          key: "name",
-          width: nameWidth,
-          flexShrink: 1,
-          flexDirection: "row",
-          children: [
-            dot,
-            Text({
-              bold: isWorkingStep,
-              color: isDone ? "subtle" : "text",
-              dimColor: !isDone && !isWorkingStep,
-              wrap: "truncate-end",
-              children: [t.subject],
-            }),
-          ],
-        }),
-        Box({
-          key: "meta",
-          flexDirection: "row",
-          columnGap: 1,
-          flexShrink: 0,
-          children: meta,
-        }),
-      ],
-    });
+    return line("row-" + t.id, [
+      Box({
+        key: "name",
+        flexDirection: "row",
+        flexShrink: 1,
+        children: [
+          dot,
+          Text({
+            key: "s",
+            bold: isWorkingStep,
+            color: isDone ? "subtle" : "text",
+            dimColor: !isDone && !isWorkingStep,
+            wrap: "truncate-end",
+            children: [t.subject],
+          }),
+        ],
+      }),
+      Box({
+        key: "meta",
+        flexDirection: "row",
+        columnGap: 1,
+        flexShrink: 0,
+        children: meta,
+      }),
+    ]);
   });
-  if (tasks.length > PLAN_ROWS) {
+  if (tasks.length > PLAN_ROWS)
     rows.push(
       Text({
         key: "more",
         color: "subtle",
         dimColor: true,
-        children: ["  + " + (tasks.length - PLAN_ROWS) + " more"],
+        children: ["+ " + (tasks.length - PLAN_ROWS) + " more"],
       }),
     );
-  }
-  if (!tasks.length && isWorking && hidden) {
+  if (!tasks.length && isWorking && hidden)
     rows.push(
       Text({
         key: "hidden",
         color: "subtle",
         dimColor: true,
         children: [
-          "  " +
-            hidden +
-            " tool calls hidden" +
-            (lastTool ? " · " + lastTool : ""),
+          hidden + " tool calls hidden" + (lastTool ? " · " + lastTool : ""),
         ],
       }),
     );
-  }
 
-  return Box({
+  return panel(el, {
     key: "plan",
-    flexDirection: "column",
-    borderStyle: "round",
-    borderColor: "subtle",
-    borderDimColor: true,
-    paddingX: 1,
-    children: [head, ...(total ? [progress] : []), ...rows],
+    label: total
+      ? "PLAN · STEP " + Math.min(done + 1, total) + " OF " + total
+      : "PLAN",
+    accent: "claude",
+    columns,
+    rows: [head, ...(total ? [progress] : []), ...rows],
   });
 }
 
 // ── agents panel ──
 
 // One row per subagent: what it works on, its model, how far it got and what it spent
-function agentsPanel(el) {
+function agentsPanel(el, columns) {
   const { Box, Text } = el;
   const now = Date.now();
   const running = agents.filter((a) => !a.endedAt).length;
-  const head = Box({
-    key: "head",
-    flexDirection: "row",
-    columnGap: 1,
-    children: [
-      Text({ bold: true, children: ["agents"] }),
-      Text({ color: "subtle", children: ["·"] }),
-      Text({
-        color: running ? "claude" : "subtle",
-        children: [running ? running + " running" : "all done"],
-      }),
-    ],
-  });
+  const cell = (key, width, child) =>
+    Box({ key, width, flexShrink: 0, children: [child] });
   const rows = agents.map((a) => {
     const done = !!a.endedAt;
-    const cell = (key, width, child) =>
-      Box({ key, width, flexShrink: 0, children: [child] });
     return Box({
       key: "agent-" + a.id,
       flexDirection: "row",
@@ -1106,19 +1379,21 @@ function agentsPanel(el) {
           flexDirection: "row",
           children: [
             done
-              ? Text({ color: "success", children: ["✓ "] })
+              ? Text({ key: "d", color: "success", children: ["✓ "] })
               : Text({
+                  key: "d",
                   color: "claude",
-                  children: [SPIN[Math.floor(now / 1000) % SPIN.length] + " "],
+                  children: [spin(now) + " "],
                 }),
             Text({
+              key: "s",
               color: done ? "subtle" : "text",
               wrap: "truncate-end",
               children: [share ? redact(a.description) : a.description],
             }),
           ],
         }),
-        cell("model", 6, Text({ color: "subtle", children: [a.model] })),
+        cell("model", 6, Text({ color: "planMode", children: [a.model] })),
         cell(
           "steps",
           18,
@@ -1152,13 +1427,42 @@ function agentsPanel(el) {
       ],
     });
   });
-  return Box({
+  return panel(el, {
     key: "agents",
-    flexDirection: "column",
-    borderStyle: "round",
-    borderColor: "subtle",
-    borderDimColor: true,
-    paddingX: 1,
-    children: [head, ...rows],
+    label: running ? "AGENTS · " + running + " RUNNING" : "AGENTS · ALL DONE",
+    accent: running ? "claude" : "success",
+    columns,
+    rows,
   });
+}
+
+// ── screen-share masking ──
+
+const MASKS = [
+  /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, // email
+  /\b(?:sk|pk|rk|ghp|gho|github_pat|xox[abpr]|AKIA)[-_A-Za-z0-9]{12,}/g, // API keys
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/g, // IPv4
+  /[$€£]\s?\d[\d,.]*(?:\s?[kKmMbB]\b)?|\b\d[\d,.]*\s?(?:USD|EUR|GBP|dollars|euros)\b/g, // money
+  /(?:\+\d{1,3}[ -]?)?(?:\(\d{2,4}\)|\d{2,4})[ -]\d{3,4}[ -]\d{3,4}\b/g, // phone
+];
+const escapeRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Each match becomes a bar of its own length, so the layout does not move
+function redact(text) {
+  if (typeof text !== "string") return text;
+  const bar = (m) => "▇".repeat(m.length);
+  let out = MASKS.reduce((t, re) => t.replace(re, bar), text);
+  for (const w of redactWords)
+    out = out.replace(new RegExp(escapeRe(w), "gi"), bar);
+  return out;
+}
+
+function redactDeep(value) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, redactDeep(v)]),
+    );
+  return value;
 }

@@ -120,12 +120,13 @@ describe("register", () => {
       ...BAND,
     });
     const all = await texts(ui);
-    expect(all).toContain("ctx");
-    expect(all).toContain(" 42%");
+    expect(all).toContain("CONTEXT");
+    expect(all).toContain("42%");
     expect(all).toContain("⎇ main");
-    expect(all).toContain("*");
-    expect(all).toContain("prod");
-    expect(all).not.toContain(" PROD ✓ ");
+    expect(all).toContain(" *");
+    expect(all).toContain("PROD");
+    expect(all).toContain("up");
+    expect(all.some((t: string) => t.startsWith("╭─ "))).toBe(true);
     expect(await ui.find({ key: "model-opus" })).toBeDefined();
     expect(all).not.toContain(" CTX ");
   });
@@ -298,7 +299,7 @@ describe("register", () => {
       ...BAND,
       props: { ...BAND.props, isWorking: false },
     });
-    expect(await texts(ui)).toContain("cache cold");
+    expect(await texts(ui)).toContain("◌ cold");
 
     const held = await $.prompt.submit({
       text: "pick up where we left",
@@ -420,5 +421,27 @@ describe("register", () => {
     } as any);
     all = await texts(ui);
     expect(all).toContain("done");
+  });
+
+  test("desktop band draws themed cards, a context gauge and native buttons", async ($, on) => {
+    world(on, { config: [] });
+    await $.session.start({
+      surface: "desktop",
+      isInteractive: true,
+      cwd: "/work/Lexicon",
+    });
+    const ui = await $.ui.mount({
+      plugin: "ali-mod",
+      surface: "desktop",
+      ...BAND,
+    });
+    const svgs = await ui.findAll({ type: "Svg" });
+    expect(svgs.some((s: any) => s.props?.alt === "Context 42%")).toBe(true);
+    const all = await texts(ui);
+    expect(all).toContain("CONTEXT");
+    expect(all).toContain("BRANCH");
+    // Box-drawing and block glyphs misalign in a proportional font
+    expect(all.some((t: string) => /[╭╰│▰▱━]/.test(t))).toBe(false);
+    expect(await ui.find({ key: "model-opus" })).toBeDefined();
   });
 });

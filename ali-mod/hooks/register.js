@@ -2,6 +2,10 @@
 //   ops       ctx %, git branch, prod health, model/effort buttons, /health and /vps
 //   clean     /clean hides tool rows and shows the plan as a checklist
 //   sessions  every session writes a heartbeat file; /sessions lists live ones (Mac + Pi)
+//   cache     warns before a message re-reads a chat whose prompt cache went cold
+//   handoff   at high context, /handoff saves a note the next chat in this folder starts from
+//   share     /screenshare masks emails, keys, IPs, amounts and chosen words on screen
+//   agents    one row per running subagent: model, steps, last tool, tokens, time
 // Claude Code allows one hooks module per plugin and one hook per event, so all parts live here.
 
 const MODELS = ["opus", "sonnet", "haiku"];
@@ -19,6 +23,16 @@ const STALE_MS = 24 * 60 * 60_000; // a heartbeat older than this gets deleted
 const PI_EVERY_MS = 30_000;
 const PI_HOST = "pi5.local";
 const PANE = "ali-sessions";
+
+// Claude Code subscriptions write the prompt cache with a one-hour lifetime
+const CACHE_TTL_MS = 60 * 60_000;
+const CACHE_SOON_MS = 10 * 60_000; // the band starts counting down this long before
+const COLD_CONFIRM_MS = 60_000; // a second Enter within this sends anyway
+const HANDOFF_AT = 75; // context percent at which the band suggests /handoff
+const HANDOFF_PROMPT =
+  "Write a handoff note so a fresh chat can continue this work with no other context. " +
+  "Markdown, under 400 words, sections: Goal, Done so far, Current state (files, branches, " +
+  "commands that matter), Decisions and why, Open problems, Next steps. Facts only, no preamble.";
 
 // ── ops state ──
 let git = null; // { branch, dirty } or null outside a repo
@@ -43,11 +57,30 @@ let local = []; // live sessions on this machine
 let remote = []; // live sessions on the Pi
 let paneOpen = false;
 
+// ── cache, handoff, share, agents state ──
+let lastReplyAt = null; // $.clock time the last turn ended: when the cache was last written
+let lastTokens = 0; // context tokens the next message re-reads
+let coldConfirmUntil = 0;
+let share = false;
+let redactWords = []; // extra words /screenshare add masks
+let agents = []; // { id, toolUseId, description, model, startedAt, endedAt?, steps, tokens, lastTool }
+
 const redraw = ($) => $.ui.invalidate("ui.render");
+// Background refreshes: a failure only leaves the band a little stale
+const quiet = (p) => p.catch(() => {});
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const shortModel = (id) => MODELS.find((m) => id.includes(m)) ?? id;
 const isLive = (s) => !s.ended && Date.now() - s.at < LIVE_MS;
 const base = (p) => p.split("/").filter(Boolean).pop() ?? p;
+const fmtTokens = (n) =>
+  n >= 1000 ? (n / 1000).toFixed(n >= 100_000 ? 0 : 1) + "k" : String(n);
+const isCold = (now) =>
+  lastReplyAt !== null && now - lastReplyAt >= CACHE_TTL_MS;
+const handoffPath = (cwd) =>
+  dir.replace(/sessions$/, "handoff") +
+  "/" +
+  cwd.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") +
+  ".md";
 const parseJson = (text) => {
   try {
     return JSON.parse(text);
@@ -220,8 +253,19 @@ export function register(on) {
       name: "sessions",
       description: "Session bar: live Claude sessions on Mac and Pi",
     });
+    await $.command.register({
+      name: "handoff",
+      description:
+        "Save a handoff note; the next chat in this folder starts from it",
+    });
+    await $.command.register({
+      name: "screenshare",
+      description: "Mask private details on screen (add <word> | clear)",
+    });
 
     clean = (await $.store.get("clean")) === true;
+    const words = await $.store.get("redact");
+    redactWords = Array.isArray(words) ? words : [];
     await loadEffort($);
     dir = (await $.env.get("HOME")) + "/.claude/ali-mod/sessions";
     const host = await $.process.run(["hostname", "-s"]);
@@ -230,8 +274,9 @@ export function register(on) {
     // Fire and forget, so session start is not blocked by git, network or disk
     refreshGit($)
       .then(() => beat($))
-      .then(() => readLocal($));
-    refreshHealth($);
+      .then(() => readLocal($))
+      .catch(() => {});
+    quiet(refreshHealth($));
     $.clock.every(GIT_EVERY_MS, () => refreshGit($));
     $.clock.every(HEALTH_EVERY_MS, () => refreshHealth($));
     $.clock.every(BEAT_EVERY_MS, async () => {
@@ -243,7 +288,12 @@ export function register(on) {
     });
     // The plan's clock and activity cells move each second while Claude works
     $.clock.every(1000, () => {
-      if (clean && working && tasks.length) redraw($);
+      if ((clean && working && tasks.length) || agents.some((a) => !a.endedAt))
+        redraw($);
+    });
+    // The cache countdown in the band moves by the minute
+    $.clock.every(30_000, () => {
+      if (lastReplyAt !== null) redraw($);
     });
     return next(e);
   });
@@ -254,8 +304,21 @@ export function register(on) {
   });
 
   on("prompt.submit", async ($, e, next) => {
-    if (e.text && !e.text.startsWith("/"))
-      promptTitle = e.text.replace(/\s+/g, " ").trim();
+    if (!e.text || e.text.startsWith("/") || e.command || e.isMeta)
+      return next(e);
+    // Hold the first send to a cold chat: it re-reads the whole context at full price
+    const now = await $.clock.now();
+    if (isCold(now) && now > coldConfirmUntil) {
+      coldConfirmUntil = now + COLD_CONFIRM_MS;
+      await $.prompt.fill({ text: e.text, mode: "replace" });
+      $.ui.toast(
+        "Cache cold: this message re-reads " +
+          fmtTokens(lastTokens) +
+          " tokens at full price. Enter again to send, or /handoff first.",
+      );
+      return { drop: "prompt cache cold" };
+    }
+    promptTitle = e.text.replace(/\s+/g, " ").trim();
     return next(e);
   }).catch(($, e, next) => next(e));
 
@@ -263,20 +326,37 @@ export function register(on) {
     hidden = 0;
     turnStartedAt = Date.now();
     working = true;
-    beat($);
+    agents = agents.filter((a) => !a.endedAt);
+    quiet(beat($));
     return next(e);
   });
 
   on("turn.complete", async ($, e, next) => {
+    // A subagent's turn ending says nothing about the main chat or its cache
+    if (e.agentId) return next(e);
     working = false;
-    beat($);
-    refreshGit($);
+    lastReplyAt = await $.clock.now();
+    coldConfirmUntil = 0;
+    const usage = await $.session.usage().catch(() => null);
+    lastTokens = usage?.context?.tokens ?? lastTokens;
+    quiet(beat($));
+    quiet(refreshGit($));
     return next(e);
   });
 
   // A streaming event: the hook is a generator that forwards the response
   on("turn.step", async function* ($, e, next) {
-    if (e.agentId) return yield* next(e);
+    if (e.agentId) {
+      const response = yield* next(e);
+      const a = agents.find((x) => x.id === e.agentId);
+      const u = response?.usage;
+      if (a && u) {
+        a.tokens +=
+          u.input_tokens + u.cache_creation_input_tokens + u.output_tokens;
+        a.model = shortModel(u.model);
+      }
+      return response;
+    }
     if (typeof e.effort === "string" && e.effort !== effort && !effortOverride)
       effort = e.effort;
     const sent =
@@ -290,7 +370,15 @@ export function register(on) {
   });
 
   on("tool.call", async ($, e, next) => {
-    if (e.agentId) return next(e);
+    if (e.agentId) {
+      const a = agents.find((x) => x.id === e.agentId);
+      if (a) {
+        a.steps += 1;
+        a.lastTool = e.tool;
+        redraw($);
+      }
+      return next(e);
+    }
     hidden += 1;
     lastTool = e.tool;
     // The tool's input fields sit on the event itself, beside `tool`
@@ -307,6 +395,10 @@ export function register(on) {
       );
     }
     const result = await next(e);
+    if (e.tool === "Agent" || e.tool === "Task") {
+      for (const a of agents)
+        if (a.toolUseId === e.tool_use_id && !a.endedAt) a.endedAt = Date.now();
+    }
     if (e.tool === "TaskCreate") {
       tasks.push({
         id: idFrom(result, String(tasks.length + 1)),
@@ -349,9 +441,93 @@ export function register(on) {
       focus: true,
       closeOnEscape: true,
     });
-    readPi($);
+    quiet(readPi($));
     return {};
   });
+
+  on("command.run", { command: "handoff" }, async ($) => {
+    $.ui.toast("Writing handoff…");
+    const r = await $.model.fork({ prompt: HANDOFF_PROMPT });
+    if (!r.isAnswered) return { text: "Handoff not written: " + r.reason };
+    const path = handoffPath(await $.session.cwd());
+    await $.process.run(["mkdir", "-p", path.replace(/\/[^/]+$/, "")]);
+    await $.fs.write(path, r.text.trim() + "\n");
+    return {
+      text:
+        "Handoff saved → " +
+        path +
+        "\nRun /clear (or start a new session here): its first message starts from it.",
+    };
+  });
+
+  // The first message of a fresh chat in this folder carries the waiting handoff, once
+  on("prompt.context", async ($, e, next) => {
+    const r = await next(e);
+    const path = handoffPath(await $.session.cwd());
+    const note = await $.fs.read(path).catch(() => null);
+    if (!note) return r;
+    await $.process.run(["mv", path, path.replace(/\.md$/, ".used.md")]);
+    return {
+      ...r,
+      blocks: [
+        ...r.blocks,
+        {
+          name: "handoff",
+          text:
+            "Handoff from the previous chat in this folder. Continue from it.\n\n" +
+            note,
+        },
+      ],
+    };
+  }).catch(($, e, next) => next(e));
+
+  on("command.run", { command: "screenshare" }, async ($, e) => {
+    const [verb, ...rest] = (e.args ?? "").trim().split(/\s+/);
+    const word = rest.join(" ");
+    if (verb === "add" && word) {
+      redactWords = [...new Set([...redactWords, word])];
+      await $.store.set("redact", redactWords);
+      redraw($);
+      return { text: "Masking " + redactWords.length + " custom word(s)" };
+    }
+    if (verb === "clear") {
+      redactWords = [];
+      await $.store.set("redact", redactWords);
+      redraw($);
+      return { text: "Custom masked words cleared" };
+    }
+    share = !share;
+    redraw($);
+    return { text: "Screen-share mode " + (share ? "on" : "off") };
+  });
+
+  // Screen-share mode rewrites only what is drawn: the transcript keeps the real text
+  on(
+    "ui.render",
+    { component: /^(UserMessage|AssistantMessage)$/ },
+    async ($, e, next) =>
+      share
+        ? next({ ...e, props: { ...e.props, text: redact(e.props.text) } })
+        : next(e),
+  );
+
+  on("agent.spawn", async ($, e, next) => {
+    const r = await next(e);
+    if (r?.agentId) {
+      agents.push({
+        id: r.agentId,
+        toolUseId: e.tool_use_id,
+        description: e.description,
+        model: shortModel(r.model ?? ""),
+        startedAt: Date.now(),
+        steps: 0,
+        tokens: 0,
+        lastTool: null,
+      });
+      redraw($);
+    }
+    return r;
+  }).catch(($, e, next) => next(e));
 
   on("ui.close", async ($, e, next) => {
     if (e.id === PANE) paneOpen = false;
@@ -359,9 +535,19 @@ export function register(on) {
   }).catch(($, e, next) => next(e));
 
   // An empty Box draws nothing, so the tool row disappears
-  on("ui.render", { component: TOOL_SITES }, async ($, e, next) =>
-    clean ? $.ui.resolve(e).Box({ children: [] }) : next(e),
-  );
+  on("ui.render", { component: TOOL_SITES }, async ($, e, next) => {
+    if (clean) return $.ui.resolve(e).Box({ children: [] });
+    if (!share) return next(e);
+    const props = /** @type {any} */ (e.props);
+    return next({
+      ...e,
+      props: {
+        ...props,
+        ...("input" in props ? { input: redactDeep(props.input) } : {}),
+        ...("output" in props ? { output: redactDeep(props.output) } : {}),
+      },
+    });
+  });
 
   on("ui.render", { component: "Pane" }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e);
@@ -553,6 +739,39 @@ export function register(on) {
           : []),
       ]),
     );
+    if (lastReplyAt !== null && !e.props.isWorking) {
+      const left = CACHE_TTL_MS - ((await $.clock.now()) - lastReplyAt);
+      if (left <= 0)
+        status.push(
+          group("cache", [
+            Text({ color: "warning", children: ["◌"] }),
+            Text({ color: "warning", children: ["cache cold"] }),
+          ]),
+        );
+      else if (left <= CACHE_SOON_MS)
+        status.push(
+          group("cache", [
+            Text({ color: "subtle", children: ["◷"] }),
+            Text({
+              color: "subtle",
+              children: ["cache " + Math.ceil(left / 60_000) + "m"],
+            }),
+          ]),
+        );
+    }
+    if (pct >= HANDOFF_AT)
+      status.push(
+        group("handoff", [
+          Text({ color: levelColor(pct), children: ["↻ /handoff"] }),
+        ]),
+      );
+    if (share)
+      status.push(
+        group("share", [
+          Text({ color: "error", children: ["●"] }),
+          Text({ color: "error", children: ["sharing"] }),
+        ]),
+      );
 
     // Row 2: radio-style toggles, the active one at full strength
     const choice = (key, text, active, onPress) =>
@@ -612,6 +831,7 @@ export function register(on) {
     ) {
       blocks.push(planPanel(el, e.props.isWorking, e.props.bodyColumns ?? 120));
     }
+    if (agents.length) blocks.push(agentsPanel(el));
 
     // Keep whatever other mods draw in the band
     const others = await next(e);
@@ -629,6 +849,37 @@ const levelColor = (pct) =>
 
 function label(el, text) {
   return el.Text({ color: "subtle", dimColor: true, children: [text] });
+}
+
+// ── screen-share masking ──
+
+const MASKS = [
+  /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, // email
+  /\b(?:sk|pk|rk|ghp|gho|github_pat|xox[abpr]|AKIA)[-_A-Za-z0-9]{12,}/g, // API keys
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/g, // IPv4
+  /[$€£]\s?\d[\d,.]*(?:\s?[kKmMbB]\b)?|\b\d[\d,.]*\s?(?:USD|EUR|GBP|dollars|euros)\b/g, // money
+  /(?:\+\d{1,3}[ -]?)?(?:\(\d{2,4}\)|\d{2,4})[ -]\d{3,4}[ -]\d{3,4}\b/g, // phone
+];
+const escapeRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Each match becomes a bar of its own length, so the layout does not move
+function redact(text) {
+  if (typeof text !== "string") return text;
+  const bar = (m) => "▇".repeat(m.length);
+  let out = MASKS.reduce((t, re) => t.replace(re, bar), text);
+  for (const w of redactWords)
+    out = out.replace(new RegExp(escapeRe(w), "gi"), bar);
+  return out;
+}
+
+function redactDeep(value) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, redactDeep(v)]),
+    );
+  return value;
 }
 
 // A thin meter, as in  ━━━━━━────── 42%
@@ -681,7 +932,8 @@ function planPanel(el, isWorking, columns) {
   const inner = Math.max(40, columns - 4);
   const nameWidth = Math.max(18, Math.floor(inner * 0.6));
 
-  const raw = promptTitle ?? "Working on the plan";
+  const raw =
+    (share ? redact(promptTitle) : promptTitle) ?? "Working on the plan";
   const maxTitle = inner - 12;
   const title = raw.length > maxTitle ? raw.slice(0, maxTitle - 1) + "…" : raw;
 
@@ -815,5 +1067,98 @@ function planPanel(el, isWorking, columns) {
     borderDimColor: true,
     paddingX: 1,
     children: [head, ...(total ? [progress] : []), ...rows],
+  });
+}
+
+// ── agents panel ──
+
+// One row per subagent: what it works on, its model, how far it got and what it spent
+function agentsPanel(el) {
+  const { Box, Text } = el;
+  const now = Date.now();
+  const running = agents.filter((a) => !a.endedAt).length;
+  const head = Box({
+    key: "head",
+    flexDirection: "row",
+    columnGap: 1,
+    children: [
+      Text({ bold: true, children: ["agents"] }),
+      Text({ color: "subtle", children: ["·"] }),
+      Text({
+        color: running ? "claude" : "subtle",
+        children: [running ? running + " running" : "all done"],
+      }),
+    ],
+  });
+  const rows = agents.map((a) => {
+    const done = !!a.endedAt;
+    const cell = (key, width, child) =>
+      Box({ key, width, flexShrink: 0, children: [child] });
+    return Box({
+      key: "agent-" + a.id,
+      flexDirection: "row",
+      columnGap: 2,
+      children: [
+        Box({
+          key: "name",
+          width: 28,
+          flexShrink: 1,
+          flexDirection: "row",
+          children: [
+            done
+              ? Text({ color: "success", children: ["✓ "] })
+              : Text({
+                  color: "claude",
+                  children: [SPIN[Math.floor(now / 1000) % SPIN.length] + " "],
+                }),
+            Text({
+              color: done ? "subtle" : "text",
+              wrap: "truncate-end",
+              children: [share ? redact(a.description) : a.description],
+            }),
+          ],
+        }),
+        cell("model", 6, Text({ color: "subtle", children: [a.model] })),
+        cell(
+          "steps",
+          18,
+          Text({
+            color: done ? "success" : "subtle",
+            wrap: "truncate-end",
+            children: [
+              done
+                ? "done"
+                : a.steps +
+                  (a.steps === 1 ? " step" : " steps") +
+                  (a.lastTool ? " · " + a.lastTool : ""),
+            ],
+          }),
+        ),
+        cell(
+          "tokens",
+          9,
+          Text({
+            color: "subtle",
+            dimColor: true,
+            children: [a.tokens ? fmtTokens(a.tokens) + " tok" : ""],
+          }),
+        ),
+        Text({
+          key: "time",
+          color: "subtle",
+          dimColor: true,
+          children: [elapsed((a.endedAt ?? now) - a.startedAt)],
+        }),
+      ],
+    });
+  });
+  return Box({
+    key: "agents",
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: "subtle",
+    borderDimColor: true,
+    paddingX: 1,
+    children: [head, ...rows],
   });
 }

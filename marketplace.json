@@ -40,6 +40,17 @@
       "author": { "name": "rezaiyan" },
       "homepage": "https://github.com/rezaiyan/claudekit",
       "keywords": ["memory", "sessions", "context", "sqlite", "productivity"]
+    },
+    {
+      "name": "voice-pair",
+      "source": {
+        "source": "github",
+        "repo": "rezaiyan/voice-pair"
+      },
+      "description": "Talk to Claude Code out loud: local speech recognition turns your voice into messages, and Claude answers with a local voice. Apple Silicon Macs, terminal CLI.",
+      "author": { "name": "rezaiyan" },
+      "homepage": "https://github.com/rezaiyan/voice-pair",
+      "keywords": ["voice", "speech", "channel", "pair-programming", "accessibility"]
     }
   ]
 }
